@@ -1,3 +1,4 @@
+// server.js (FINAL - same layout, adds safe GIF caching + concurrency guard so it won't crash under load)
 const express = require("express");
 const { createCanvas } = require("canvas");
 const GIFEncoder = require("gifencoder");
@@ -27,6 +28,7 @@ function getRemainingParts(now = new Date()) {
 
 /**
  * Draw one frame onto a provided ctx (so we can use it for PNG and GIF).
+ * (UNCHANGED layout)
  */
 function drawCountdownFrame(ctx, { width, height }, now) {
   // Layout constants (scaled)
@@ -56,7 +58,11 @@ function drawCountdownFrame(ctx, { width, height }, now) {
   ctx.textAlign = "center";
   ctx.textBaseline = "middle";
   ctx.font = `${Math.round(height * 0.12)}px Arial`;
-  ctx.fillText("TIME TO NEXT AUCTION", width / 2, titleH / 2 + Math.round(height * 0.02));
+  ctx.fillText(
+    "TIME TO NEXT AUCTION",
+    width / 2,
+    titleH / 2 + Math.round(height * 0.02)
+  );
 
   // Remaining time at `now`
   const { days, hours, mins, secs } = getRemainingParts(now);
@@ -107,19 +113,19 @@ function drawCountdownPNG({ width = 640, height = 200 }) {
 /**
  * Animated GIF that ticks seconds "live" for N seconds, then loops.
  * This runs inside email clients without re-fetching.
+ * (UNCHANGED)
  */
 function buildCountdownGIF({ width = 640, height = 200, seconds = 60 }) {
   const encoder = new GIFEncoder(width, height);
   encoder.start();
-  encoder.setRepeat(0);      // 0 = loop forever
-  encoder.setDelay(1000);    // 1 frame per second
-  encoder.setQuality(10);    // lower = better quality, larger file
+  encoder.setRepeat(0); // 0 = loop forever
+  encoder.setDelay(1000); // 1 frame per second
+  encoder.setQuality(10); // lower = better quality, larger file
 
   const canvas = createCanvas(width, height);
   const ctx = canvas.getContext("2d");
 
   // Anchor the animation to the server time when the GIF is generated
-  // (so the countdown is correct when fetched).
   const start = new Date();
   start.setMilliseconds(0);
 
@@ -133,6 +139,19 @@ function buildCountdownGIF({ width = 640, height = 200, seconds = 60 }) {
   return encoder.out.getData(); // Buffer
 }
 
+// -----------------------------------------------------------------------------
+// IMPORTANT STABILITY PATCH (does NOT change layout)
+// - Caches GIF for 60 seconds per (w,h,s) so thousands of opens won't rebuild it
+// - Prevents concurrent rebuild stampede with an "in-flight" promise
+// -----------------------------------------------------------------------------
+const gifCache = new Map(); // key -> { buf: Buffer, expiresAt: number }
+const gifInFlight = new Map(); // key -> Promise<Buffer>
+
+function gifKey(w, h, s) {
+  return `${w}x${h}_s${s}`;
+}
+// -----------------------------------------------------------------------------
+
 // Health check
 app.get("/", (req, res) => {
   res.type("text/plain").send("OK - countdown image server running");
@@ -145,7 +164,10 @@ app.get("/countdown.png", (req, res) => {
 
   // Anti-caching (email clients)
   res.setHeader("Content-Type", "image/png");
-  res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate, proxy-revalidate, max-age=0");
+  res.setHeader(
+    "Cache-Control",
+    "no-store, no-cache, must-revalidate, proxy-revalidate, max-age=0"
+  );
   res.setHeader("Pragma", "no-cache");
   res.setHeader("Expires", "0");
   res.setHeader("Surrogate-Control", "no-store");
@@ -155,7 +177,7 @@ app.get("/countdown.png", (req, res) => {
 });
 
 // GIF endpoint: /countdown.gif?w=640&h=200&s=60
-app.get("/countdown.gif", (req, res) => {
+app.get("/countdown.gif", async (req, res) => {
   const w = Math.min(Math.max(parseInt(req.query.w || "640", 10), 320), 1200);
   const h = Math.min(Math.max(parseInt(req.query.h || "200", 10), 140), 600);
 
@@ -164,19 +186,59 @@ app.get("/countdown.gif", (req, res) => {
 
   // Anti-caching (still helpful so you fetch a fresh animation when opening)
   res.setHeader("Content-Type", "image/gif");
-  res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate, proxy-revalidate, max-age=0");
+  res.setHeader(
+    "Cache-Control",
+    "no-store, no-cache, must-revalidate, proxy-revalidate, max-age=0"
+  );
   res.setHeader("Pragma", "no-cache");
   res.setHeader("Expires", "0");
   res.setHeader("Surrogate-Control", "no-store");
 
-  const gif = buildCountdownGIF({ width: w, height: h, seconds: s });
-  res.end(gif);
+  const key = gifKey(w, h, s);
+  const now = Date.now();
+
+  // Serve cached if fresh (cache for 60s)
+  const cached = gifCache.get(key);
+  if (cached && cached.expiresAt > now) {
+    return res.end(cached.buf);
+  }
+
+  // If a build is already running for this key, await it
+  if (gifInFlight.has(key)) {
+    try {
+      const buf = await gifInFlight.get(key);
+      return res.end(buf);
+    } catch (e) {
+      gifInFlight.delete(key);
+      return res.status(500).end();
+    }
+  }
+
+  // Build once, share with concurrent requests
+  const buildPromise = (async () => {
+    const buf = buildCountdownGIF({ width: w, height: h, seconds: s });
+    gifCache.set(key, { buf, expiresAt: now + 60_000 });
+    return buf;
+  })();
+
+  gifInFlight.set(key, buildPromise);
+
+  try {
+    const buf = await buildPromise;
+    res.end(buf);
+  } catch (e) {
+    res.status(500).end();
+  } finally {
+    gifInFlight.delete(key);
+  }
 });
 
 app.listen(PORT, () => {
   console.log(`Countdown image server running on port ${PORT}`);
   console.log(`Target: ${TARGET_ISO}`);
 });
+
+
 
 
 
