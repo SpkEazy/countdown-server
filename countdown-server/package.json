@@ -8,6 +8,8 @@
   },
   "dependencies": {
     "canvas": "^2.11.2",
-    "express": "^4.19.2"
+    "express": "^4.19.2",
+    "gifencoder": "^2.0.1"
   }
 }
+
