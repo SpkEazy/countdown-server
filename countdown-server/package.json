@@ -1,0 +1,13 @@
+{
+  "name": "auction-countdown-image",
+  "version": "1.0.0",
+  "main": "server.js",
+  "type": "commonjs",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "canvas": "^2.11.2",
+    "express": "^4.19.2"
+  }
+}
