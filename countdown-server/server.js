@@ -12,7 +12,7 @@ const TARGET = new Date(TARGET_ISO);
 const pad2 = (n) => String(n).padStart(2, "0");
 
 function getRemainingParts(now = new Date()) {
-  let diffMs = TARGET.getTime() - now.getTime();
+  const diffMs = TARGET.getTime() - now.getTime();
   if (diffMs <= 0) return { days: 0, hours: 0, mins: 0, secs: 0, done: true };
 
   const totalSeconds = Math.floor(diffMs / 1000);
@@ -29,7 +29,7 @@ function drawCountdownPNG({ width = 640, height = 200 }) {
   const ctx = canvas.getContext("2d");
 
   // Layout constants (scaled for different widths)
-  const border = Math.max(2, Math.round(width * 0.004)); // ~2-3px
+  const border = Math.max(2, Math.round(width * 0.004)); // ~2-4px
   const paddingX = Math.round(width * 0.04);
   const titleH = Math.round(height * 0.35);
 
@@ -42,7 +42,7 @@ function drawCountdownPNG({ width = 640, height = 200 }) {
   ctx.lineWidth = border;
   ctx.strokeRect(border / 2, border / 2, width - border, height - border);
 
-  // Title line + divider
+  // Title divider line
   ctx.strokeStyle = "#222222";
   ctx.lineWidth = Math.max(1, border - 1);
   ctx.beginPath();
@@ -55,7 +55,11 @@ function drawCountdownPNG({ width = 640, height = 200 }) {
   ctx.textAlign = "center";
   ctx.textBaseline = "middle";
   ctx.font = `${Math.round(height * 0.12)}px Arial`;
-  ctx.fillText("TIME TO NEXT AUCTION", width / 2, titleH / 2 + Math.round(height * 0.02));
+  ctx.fillText(
+    "TIME TO NEXT AUCTION",
+    width / 2,
+    titleH / 2 + Math.round(height * 0.02)
+  );
 
   // Remaining time
   const { days, hours, mins, secs } = getRemainingParts();
@@ -82,7 +86,6 @@ function drawCountdownPNG({ width = 640, height = 200 }) {
 
   for (let i = 0; i < colCount; i++) {
     const cx = paddingX + colW * (i + 0.5);
-    // Place digits
     ctx.fillText(values[i], cx, digitsTop + Math.round(digitsAreaH * 0.68));
   }
 
@@ -104,7 +107,37 @@ app.get("/", (req, res) => {
   res.type("text/plain").send("OK - countdown image server running");
 });
 
-// Countdown endpoint
+/**
+ * Sendtric-style "illusion" endpoint:
+ * - returns a 302 redirect to /countdown.png with a changing query parameter `t`
+ * - helps encourage re-fetching instead of cached images
+ *
+ * Use this in Mailchimp:
+ *   https://YOUR_SERVICE.onrender.com/countdown-live.png?w=520&h=180&cb=*|DATE:NOW|*
+ */
+app.get("/countdown-live.png", (req, res) => {
+  const w = Math.min(Math.max(parseInt(req.query.w || "640", 10), 320), 1200);
+  const h = Math.min(Math.max(parseInt(req.query.h || "200", 10), 140), 600);
+
+  // changes every second
+  const t = Math.floor(Date.now() / 1000);
+
+  // pass through cb if provided
+  const cb = req.query.cb ? `&cb=${encodeURIComponent(req.query.cb)}` : "";
+
+  // no-cache for the redirect response too
+  res.setHeader(
+    "Cache-Control",
+    "no-store, no-cache, must-revalidate, proxy-revalidate, max-age=0"
+  );
+  res.setHeader("Pragma", "no-cache");
+  res.setHeader("Expires", "0");
+  res.setHeader("Surrogate-Control", "no-store");
+
+  res.redirect(302, `/countdown.png?w=${w}&h=${h}&t=${t}${cb}`);
+});
+
+// Countdown endpoint (PNG generator)
 // Example: /countdown.png?w=640&h=200
 app.get("/countdown.png", (req, res) => {
   const w = Math.min(Math.max(parseInt(req.query.w || "640", 10), 320), 1200);
@@ -112,11 +145,15 @@ app.get("/countdown.png", (req, res) => {
 
   // Aggressive anti-caching (important for email clients)
   res.setHeader("Content-Type", "image/png");
-  res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate, proxy-revalidate, max-age=0");
+  res.setHeader(
+    "Cache-Control",
+    "no-store, no-cache, must-revalidate, proxy-revalidate, max-age=0"
+  );
   res.setHeader("Pragma", "no-cache");
   res.setHeader("Expires", "0");
   res.setHeader("Surrogate-Control", "no-store");
 
+  // If someone adds &t=... it will naturally create a "unique" URL (helps caches)
   const buf = drawCountdownPNG({ width: w, height: h });
   res.end(buf);
 });
